@@ -103,6 +103,8 @@ Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeSt
      mImuCalib(ImuCalib), mpImuPreintegrated(NULL), mpPrevFrame(pPrevF),mpImuPreintegratedFrame(NULL), mpReferenceKF(static_cast<KeyFrame*>(NULL)), mbIsSet(false), mbImuPreintegrated(false),
      mpCamera(pCamera) ,mpCamera2(nullptr), mbHasPose(false), mbHasVelocity(false)
 {
+
+    std::cout << "Stereo-inertial constructor called" << std::endl;
     // Frame ID
     mnId=nNextId++;
 
@@ -119,8 +121,29 @@ Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeSt
 #ifdef REGISTER_TIMES
     std::chrono::steady_clock::time_point time_StartExtORB = std::chrono::steady_clock::now();
 #endif
+    // Load masks
+    static cv::Mat maskLeft = cv::imread("../masks/left_camera_car_masked.png", cv::IMREAD_GRAYSCALE);
+    static cv::Mat maskRight = cv::imread("../masks/right_camera_car_masked.png", cv::IMREAD_GRAYSCALE);
+    // DEBUG OUTPUT:
+    std::cout << "MASK DEBUG:" << std::endl;
+    std::cout << "Left mask loaded: " << !maskLeft.empty() << " Size: " << maskLeft.size() << std::endl;
+    std::cout << "Right mask loaded: " << !maskRight.empty() << " Size: " << maskRight.size() << std::endl;
+    std::cout << "Image sizes: Left " << imLeft.size() << " Right " << imRight.size() << std::endl;
+
+    if(!maskLeft.empty()) {
+        cv::Scalar meanLeft = cv::mean(maskLeft);
+        std::cout << "Left mask mean value: " << meanLeft[0] << std::endl;
+        cv::Point minLoc, maxLoc;
+        double minVal, maxVal;
+        cv::minMaxLoc(maskLeft, &minVal, &maxVal, &minLoc, &maxLoc);
+        std::cout << "Left mask range: " << minVal << " to " << maxVal << std::endl;
+    }
+
+    if(maskLeft.empty()) maskLeft = cv::Mat::ones(imLeft.size(), CV_8UC1) * 255;
+    if(maskRight.empty()) maskRight = cv::Mat::ones(imRight.size(), CV_8UC1) * 255;
     thread threadLeft(&Frame::ExtractORB,this,0,imLeft,0,0);
     thread threadRight(&Frame::ExtractORB,this,1,imRight,0,0);
+    
     threadLeft.join();
     threadRight.join();
 #ifdef REGISTER_TIMES
@@ -417,12 +440,72 @@ void Frame::AssignFeaturesToGrid()
 
 void Frame::ExtractORB(int flag, const cv::Mat &im, const int x0, const int x1)
 {
+    // Load mask
+    static cv::Mat maskLeft = cv::imread("../masks/left_camera_car_masked.png", cv::IMREAD_GRAYSCALE);
+    static cv::Mat maskRight = cv::imread("../masks/right_camera_car_masked.png", cv::IMREAD_GRAYSCALE);
+    
     vector<int> vLapping = {x0,x1};
-    if(flag==0)
-        monoLeft = (*mpORBextractorLeft)(im,cv::Mat(),mvKeys,mDescriptors,vLapping);
-    else
-        monoRight = (*mpORBextractorRight)(im,cv::Mat(),mvKeysRight,mDescriptorsRight,vLapping);
+    
+    if(flag==0) {
+        monoLeft = (*mpORBextractorLeft)(im, cv::Mat(), mvKeys, mDescriptors, vLapping);
+        
+        // Apply mask filtering
+        if(!maskLeft.empty()) {
+            vector<cv::KeyPoint> filteredKeys;
+            cv::Mat filteredDescriptors;
+            
+            for(size_t i = 0; i < mvKeys.size(); i++) {
+                const cv::KeyPoint& kp = mvKeys[i];
+                int x = (int)kp.pt.x;
+                int y = (int)kp.pt.y;
+                
+                if(x >= 0 && x < maskLeft.cols && y >= 0 && y < maskLeft.rows) {
+                    if(maskLeft.at<uchar>(y, x) > 0) {
+                        filteredKeys.push_back(kp);
+                        if(!mDescriptors.empty()) {
+                            if(filteredDescriptors.empty()) {
+                                filteredDescriptors = cv::Mat(0, mDescriptors.cols, mDescriptors.type());
+                            }
+                            filteredDescriptors.push_back(mDescriptors.row(i));
+                        }
+                    }
+                }
+            }
+            mvKeys = filteredKeys;
+            mDescriptors = filteredDescriptors;
+        }
+    }
+    else {
+        monoRight = (*mpORBextractorRight)(im, cv::Mat(), mvKeysRight, mDescriptorsRight, vLapping);
+        
+        // Same for right camera
+        if(!maskRight.empty()) {
+            vector<cv::KeyPoint> filteredKeys;
+            cv::Mat filteredDescriptors;
+            
+            for(size_t i = 0; i < mvKeysRight.size(); i++) {
+                const cv::KeyPoint& kp = mvKeysRight[i];
+                int x = (int)kp.pt.x;
+                int y = (int)kp.pt.y;
+                
+                if(x >= 0 && x < maskRight.cols && y >= 0 && y < maskRight.rows) {
+                    if(maskRight.at<uchar>(y, x) > 0) {
+                        filteredKeys.push_back(kp);
+                        if(!mDescriptorsRight.empty()) {
+                            if(filteredDescriptors.empty()) {
+                                filteredDescriptors = cv::Mat(0, mDescriptorsRight.cols, mDescriptorsRight.type());
+                            }
+                            filteredDescriptors.push_back(mDescriptorsRight.row(i));
+                        }
+                    }
+                }
+            }
+            mvKeysRight = filteredKeys;
+            mDescriptorsRight = filteredDescriptors;
+        }
+    }
 }
+
 
 bool Frame::isSet() const {
     return mbIsSet;
@@ -1037,6 +1120,7 @@ Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeSt
          mbHasPose(false), mbHasVelocity(false)
 
 {
+    std::cout << "KANNALA-BRANDT CONSTRUCTOR CALLED!" << std::endl;
     imgLeft = imLeft.clone();
     imgRight = imRight.clone();
 
@@ -1056,6 +1140,26 @@ Frame::Frame(const cv::Mat &imLeft, const cv::Mat &imRight, const double &timeSt
 #ifdef REGISTER_TIMES
     std::chrono::steady_clock::time_point time_StartExtORB = std::chrono::steady_clock::now();
 #endif
+    static cv::Mat maskLeft = cv::imread("../masks/left_camera_car_masked.png", cv::IMREAD_GRAYSCALE);
+    static cv::Mat maskRight = cv::imread("../masks/right_camera_car_masked.png", cv::IMREAD_GRAYSCALE);
+    // DEBUG OUTPUT:
+    std::cout << "MASK DEBUG:" << std::endl;
+    std::cout << "Left mask loaded: " << !maskLeft.empty() << " Size: " << maskLeft.size() << std::endl;
+    std::cout << "Right mask loaded: " << !maskRight.empty() << " Size: " << maskRight.size() << std::endl;
+    std::cout << "Image sizes: Left " << imLeft.size() << " Right " << imRight.size() << std::endl;
+
+    if(!maskLeft.empty()) {
+        cv::Scalar meanLeft = cv::mean(maskLeft);
+        std::cout << "Left mask mean value: " << meanLeft[0] << std::endl;
+        cv::Point minLoc, maxLoc;
+        double minVal, maxVal;
+        cv::minMaxLoc(maskLeft, &minVal, &maxVal, &minLoc, &maxLoc);
+        std::cout << "Left mask range: " << minVal << " to " << maxVal << std::endl;
+    }
+
+    if(maskLeft.empty()) maskLeft = cv::Mat::ones(imLeft.size(), CV_8UC1) * 255;
+    if(maskRight.empty()) maskRight = cv::Mat::ones(imRight.size(), CV_8UC1) * 255;
+    
     thread threadLeft(&Frame::ExtractORB,this,0,imLeft,static_cast<KannalaBrandt8*>(mpCamera)->mvLappingArea[0],static_cast<KannalaBrandt8*>(mpCamera)->mvLappingArea[1]);
     thread threadRight(&Frame::ExtractORB,this,1,imRight,static_cast<KannalaBrandt8*>(mpCamera2)->mvLappingArea[0],static_cast<KannalaBrandt8*>(mpCamera2)->mvLappingArea[1]);
     threadLeft.join();
